@@ -29,7 +29,7 @@ class DatabaseService:
         self._ensure_connection()
         with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute("""
-                SELECT a.id, a.visitor_id, a.event, a.painting_id, a.duration, a.metadata,
+                SELECT a.id, a.visitor_id, a.event, a.painting_id, a.metadata,
                        p.embedding as painting_embedding
                 FROM activities a
                 JOIN paintings p ON a.painting_id = p.id

@@ -4,6 +4,7 @@ WORKDIR /app
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
+    libpq-dev \
     gcc \
     && rm -rf /var/lib/apt/lists/*
 
@@ -11,13 +12,8 @@ RUN apt-get update && apt-get install -y \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Pre-download the CLIP model during build
-RUN python -c "from transformers import CLIPModel, CLIPProcessor; \
-    CLIPModel.from_pretrained('openai/clip-vit-base-patch32'); \
-    CLIPProcessor.from_pretrained('openai/clip-vit-base-patch32')"
-
 # Copy application code
-COPY app/ ./app/
+COPY . .
 
 # Expose port
 EXPOSE 8080
