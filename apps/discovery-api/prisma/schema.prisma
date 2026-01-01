@@ -1,0 +1,182 @@
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  extensions = [vector]
+}
+
+// ============================================
+// PAINTINGS (Core Data)
+// ============================================
+model Painting {
+  id         String   @id
+  title      String
+  titleEn    String?  @map("title_en")
+  artist     String
+  artistEn   String?  @map("artist_en")
+  year       Int?
+  style      String?
+
+  imageUrl   String   @map("image_url")
+  imageHdUrl String?  @map("image_hd_url")
+
+  source     String?
+  sourceUrl  String?  @map("source_url")
+  license    String?
+
+  // Core: embedding vector (512 dimensions)
+  embedding  Unsupported("vector(512)")?
+
+  // Optional tags for filtering
+  tags        String[]
+  aspectRatio String?  @map("aspect_ratio")
+
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  orders         Order[]
+  activities     Activity[]
+  shownPaintings ShownPainting[]
+  savedPaintings SavedPainting[]
+
+  @@map("paintings")
+}
+
+// ============================================
+// USER PREFERENCES (Embedding State)
+// ============================================
+model UserPreference {
+  visitorId        String   @id @map("visitor_id")
+  embedding        Unsupported("vector(512)")?
+  interactionCount Int      @default(0) @map("interaction_count")
+  lastStyleCodes   String[] @map("last_style_codes")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  activities     Activity[]
+  shownPaintings ShownPainting[]
+  savedPaintings SavedPainting[]
+  orders         Order[]
+
+  @@map("user_preferences")
+}
+
+// ============================================
+// ACTIVITIES (Event Log - Append Only)
+// ============================================
+model Activity {
+  id         BigInt   @id @default(autoincrement())
+  visitorId  String   @map("visitor_id")
+  sessionId  String?  @map("session_id")
+  event      String
+  paintingId String?  @map("painting_id")
+  position   Int?
+  source     String?
+  metadata   Json?
+  processed  Boolean  @default(false)
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  // Relations
+  user     UserPreference? @relation(fields: [visitorId], references: [visitorId])
+  painting Painting?       @relation(fields: [paintingId], references: [id])
+
+  @@index([visitorId, createdAt(sort: Desc)])
+  @@index([processed, createdAt])
+  @@map("activities")
+}
+
+// ============================================
+// SHOWN PAINTINGS (Avoid Repeats)
+// ============================================
+model ShownPainting {
+  visitorId  String   @map("visitor_id")
+  paintingId String   @map("painting_id")
+  shownAt    DateTime @default(now()) @map("shown_at")
+
+  user     UserPreference @relation(fields: [visitorId], references: [visitorId])
+  painting Painting       @relation(fields: [paintingId], references: [id])
+
+  @@id([visitorId, paintingId])
+  @@index([visitorId])
+  @@map("shown_paintings")
+}
+
+// ============================================
+// SAVED PAINTINGS (User Favorites)
+// ============================================
+model SavedPainting {
+  visitorId  String   @map("visitor_id")
+  paintingId String   @map("painting_id")
+  savedAt    DateTime @default(now()) @map("saved_at")
+
+  user     UserPreference @relation(fields: [visitorId], references: [visitorId])
+  painting Painting       @relation(fields: [paintingId], references: [id])
+
+  @@id([visitorId, paintingId])
+  @@map("saved_paintings")
+}
+
+// ============================================
+// ORDERS (Payment & Fulfillment)
+// ============================================
+model Order {
+  id                  String   @id
+  visitorId           String   @map("visitor_id")
+
+  stripeSessionId     String?  @unique @map("stripe_session_id")
+  stripePaymentIntent String?  @map("stripe_payment_intent")
+
+  paintingId String  @map("painting_id")
+  size       String
+  material   String  @default("canvas")
+  frame      String?
+
+  amount   Int
+  currency String @default("cny")
+  status   String @default("pending")
+
+  shippingName     String? @map("shipping_name")
+  shippingPhone    String? @map("shipping_phone")
+  shippingAddress  String? @map("shipping_address")
+  shippingTracking String? @map("shipping_tracking")
+
+  createdAt   DateTime  @default(now()) @map("created_at")
+  paidAt      DateTime? @map("paid_at")
+  shippedAt   DateTime? @map("shipped_at")
+  deliveredAt DateTime? @map("delivered_at")
+
+  metadata Json?
+
+  user     UserPreference @relation(fields: [visitorId], references: [visitorId])
+  painting Painting       @relation(fields: [paintingId], references: [id])
+
+  @@index([visitorId, createdAt(sort: Desc)])
+  @@index([status])
+  @@map("orders")
+}
+
+// ============================================
+// BATCH JOBS (Admin Upload)
+// ============================================
+model BatchJob {
+  id          String    @id
+  status      String    @default("pending")
+  total       Int       @default(0)
+  processed   Int       @default(0)
+  failed      Int       @default(0)
+  failedItems Json?     @map("failed_items")
+  error       String?
+
+  createdAt   DateTime  @default(now()) @map("created_at")
+  completedAt DateTime? @map("completed_at")
+
+  @@map("batch_jobs")
+}
