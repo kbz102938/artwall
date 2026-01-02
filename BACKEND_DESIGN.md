@@ -201,13 +201,39 @@ ON paintings USING ivfflat (embedding vector_cosine_ops)
 WITH (lists = 100);
 
 -- ============================================
--- USER PREFERENCES (Embedding State)
+-- HOME STYLES (Pre-computed style embeddings)
+-- ============================================
+CREATE TABLE home_styles (
+    id          SERIAL PRIMARY KEY,
+    name        VARCHAR(100) NOT NULL,        -- '现代简约'
+    name_en     VARCHAR(100),                 -- 'Modern Minimalist'
+    image_url   VARCHAR(500) NOT NULL,
+    embedding   vector(512) NOT NULL,
+    created_at  TIMESTAMP DEFAULT NOW()
+);
+
+-- ============================================
+-- USER STYLE SELECTIONS (Links visitors to selected styles)
+-- ============================================
+CREATE TABLE user_style_selections (
+    visitor_id   VARCHAR(100) NOT NULL,
+    style_id     INTEGER NOT NULL,
+    selected_at  TIMESTAMP DEFAULT NOW(),
+
+    PRIMARY KEY (visitor_id, style_id),
+    FOREIGN KEY (style_id) REFERENCES home_styles(id)
+);
+
+CREATE INDEX idx_user_style_selections_visitor ON user_style_selections(visitor_id);
+
+-- ============================================
+-- USER PREFERENCES (Learned Embedding from Interactions)
 -- ============================================
 CREATE TABLE user_preferences (
     visitor_id          VARCHAR(100) PRIMARY KEY,
-    embedding           vector(512),
+    embedding           vector(512),          -- Learned from user interactions (save, view, purchase)
     interaction_count   INTEGER DEFAULT 0,
-    last_style_codes    TEXT[],           -- Last selected home styles
+    room_photo_url      VARCHAR(500),
     created_at          TIMESTAMP DEFAULT NOW(),
     updated_at          TIMESTAMP DEFAULT NOW()
 );
@@ -321,8 +347,6 @@ CREATE INDEX idx_orders_stripe_session ON orders(stripe_session_id);
 
 | Data | Storage |
 |------|---------|
-| Home styles (8 options) | Static config in code |
-| Style embeddings | Pre-computed in config |
 | Quick preference pairs | Static config in code |
 
 ---
@@ -366,20 +390,48 @@ type ActivityType =
   | 'session_end'      // Left app
 ```
 
-### 5.2 Signal Weights
+### 5.2 Interaction Signals & Weights
 
-| Event | Weight | Description |
-|-------|--------|-------------|
-| `purchase` | +1.0 | Strongest positive |
-| `save` | +0.5 | Strong positive |
-| `share` | +0.4 | Positive |
-| `click` | +0.2 | Interest |
-| `view` (>5s) | +0.3 | Strong interest |
-| `view` (3-5s) | +0.2 | Moderate interest |
-| `view` (1-3s) | +0.1 | Slight interest |
-| `impression` | 0 | Neutral |
-| `hide` | -0.5 | Strong negative |
-| `unsave` | -0.3 | Negative |
+These signals update the user's **learned embedding** in `user_preferences.embedding`.
+
+#### Explicit Signals (strongest)
+
+| Event | Weight | Impact on Embedding |
+|-------|--------|---------------------|
+| `purchase` | +1.0 | Move toward painting |
+| `save` | +0.7 | Move toward painting |
+| `like` | +0.5 | Move toward painting |
+| `hide` | -0.5 | Move away from painting |
+| `not_interested` | -0.8 | Move away from painting |
+
+#### Implicit Signals (weaker but valuable)
+
+| Event | Weight | Notes |
+|-------|--------|-------|
+| `view` (>5s dwell) | +0.3 | Looking closely |
+| `view` (3-5s dwell) | +0.2 | Moderate interest |
+| `view` (1-3s dwell) | +0.1 | Slight interest |
+| `click` (view details) | +0.3 | Engaged enough to tap |
+| `zoom` | +0.2 | Examining details |
+| `share` | +0.4 | Positive endorsement |
+| `scroll_back` | +0.3 | Reconsidering |
+| `quick_scroll` | -0.1 | Not interested |
+| `impression` | 0 | Neutral (no update) |
+
+#### Embedding Update Formula
+
+```python
+# Positive weight → Move embedding toward painting
+# Negative weight → Move embedding away from painting
+
+new_embedding = normalize(
+  user_embedding * (1 - learning_rate) +
+  painting_embedding * learning_rate * weight
+)
+
+# learning_rate decays as interaction_count grows (less volatile over time)
+learning_rate = base_rate / (1 + interaction_count * 0.1)
+```
 
 ### 5.3 Pub/Sub Configuration
 
@@ -467,12 +519,27 @@ Response:
 }
 
 Logic:
-1. Get visitor embedding from user_preferences
-2. If no embedding → return cold start feed
-3. Get shown_paintings to exclude
-4. Vector similarity search
-5. Record as shown
-6. Return results
+1. Get user's selected styles from user_style_selections
+2. Get user's learned embedding from user_preferences (if exists)
+3. If no styles AND no embedding → return cold start feed (recent paintings)
+4. Get shown_paintings to exclude
+5. Compute similarity using MAX across all signals:
+
+   SELECT p.*, GREATEST(
+     -- Style similarities (user selected 2 styles)
+     1 - (p.embedding <=> style1.embedding),
+     1 - (p.embedding <=> style2.embedding),
+     -- Learned embedding similarity (if exists)
+     COALESCE(1 - (p.embedding <=> user.embedding), 0)
+   ) as similarity
+   FROM paintings p
+   JOIN home_styles style1, style2 ...
+   LEFT JOIN user_preferences user ...
+   WHERE p.id NOT IN (shown_paintings)
+   ORDER BY similarity DESC
+
+6. Record as shown
+7. Return results
 ```
 
 #### POST /api/onboarding/style
@@ -482,20 +549,24 @@ Logic:
 
 Request:
 {
-  "styleCodes": ["modern", "nordic"]
+  "styleIds": [1, 2]
 }
 
 Response:
 {
   "success": true,
-  "embedding": [0.023, -0.156, ...]  // Optional: return for debugging
+  "styles": [
+    { "id": 1, "name": "现代简约", "nameEn": "Modern Minimalist" },
+    { "id": 2, "name": "北欧", "nameEn": "Nordic" }
+  ]
 }
 
 Logic:
-1. Look up pre-computed embeddings for selected styles
-2. Average them to create initial user embedding
-3. Save to user_preferences
+1. Validate styleIds exist in home_styles table
+2. Delete existing user_style_selections for this visitor
+3. Insert new user_style_selections records
 4. Log activity event
+5. Note: Does NOT compute/store user embedding - feed uses MAX similarity at query time
 ```
 
 #### GET /api/paintings/:id
@@ -1466,98 +1537,66 @@ export function PaintingCard({ painting, position }: Props) {
 
 ---
 
-## 十、Static Configuration
+## 十、Static Configuration & Seeding
 
-### 10.1 Home Styles (Pre-computed)
+### 10.1 Home Styles (Stored in Database)
 
-```typescript
-// packages/config/styles.ts
+Home styles are stored in the `home_styles` table with pre-computed embeddings.
 
-export interface HomeStyle {
-  code: string
-  name: string
-  nameEn: string
-  imageUrl: string
-  embedding: number[]  // 512 dimensions, pre-computed
-}
+**Initial seed data:**
+| id | name | name_en | image_url |
+|----|------|---------|-----------|
+| 1 | 现代简约 | Modern Minimalist | /images/styles/modern.jpg |
+| 2 | 北欧 | Nordic | /images/styles/nordic.jpg |
+| 3 | 日式/侘寂 | Japanese Wabi-Sabi | /images/styles/japanese.jpg |
+| 4 | 新中式 | New Chinese | /images/styles/chinese.jpg |
+| 5 | 法式/轻奢 | French Luxury | /images/styles/french.jpg |
+| 6 | 美式 | American | /images/styles/american.jpg |
+| 7 | 工业风 | Industrial | /images/styles/industrial.jpg |
+| 8 | 奶油风/混搭 | Cream/Eclectic | /images/styles/cream.jpg |
 
-export const HOME_STYLES: HomeStyle[] = [
-  {
-    code: 'modern',
-    name: '现代简约',
-    nameEn: 'Modern Minimalist',
-    imageUrl: '/images/styles/modern.jpg',
-    embedding: [0.023, -0.156, 0.089, /* ... 512 values */]
-  },
-  {
-    code: 'nordic',
-    name: '北欧',
-    nameEn: 'Nordic',
-    imageUrl: '/images/styles/nordic.jpg',
-    embedding: [0.045, -0.078, 0.112, /* ... 512 values */]
-  },
-  // ... 6 more styles
-]
-
-export function getStyleEmbedding(codes: string[]): number[] {
-  const selectedStyles = HOME_STYLES.filter(s => codes.includes(s.code))
-
-  if (selectedStyles.length === 0) {
-    throw new Error('No valid styles selected')
-  }
-
-  // Average embeddings
-  const result = new Array(512).fill(0)
-
-  for (const style of selectedStyles) {
-    for (let i = 0; i < 512; i++) {
-      result[i] += style.embedding[i] / selectedStyles.length
-    }
-  }
-
-  // Normalize
-  const norm = Math.sqrt(result.reduce((sum, v) => sum + v * v, 0))
-  return result.map(v => v / norm)
-}
-```
-
-### 10.2 Generate Embeddings Script
+### 10.2 Seed Styles Script
 
 ```python
-# scripts/generate-style-embeddings.py
+# scripts/seed-home-styles.py
 
 """
-Run this locally to generate embeddings for style images.
-Copy output to packages/config/styles.ts
+Generate embeddings for style images and insert into home_styles table.
 """
 
-import json
+import asyncpg
 from app.services.embedding_service import embedding_service
 
 STYLES = [
-    {"code": "modern", "image": "styles/modern.jpg"},
-    {"code": "nordic", "image": "styles/nordic.jpg"},
-    {"code": "japanese", "image": "styles/japanese.jpg"},
-    {"code": "chinese", "image": "styles/chinese.jpg"},
-    {"code": "french", "image": "styles/french.jpg"},
-    {"code": "american", "image": "styles/american.jpg"},
-    {"code": "industrial", "image": "styles/industrial.jpg"},
-    {"code": "cream", "image": "styles/cream.jpg"},
+    {"name": "现代简约", "name_en": "Modern Minimalist", "image": "styles/modern.jpg"},
+    {"name": "北欧", "name_en": "Nordic", "image": "styles/nordic.jpg"},
+    {"name": "日式/侘寂", "name_en": "Japanese Wabi-Sabi", "image": "styles/japanese.jpg"},
+    {"name": "新中式", "name_en": "New Chinese", "image": "styles/chinese.jpg"},
+    {"name": "法式/轻奢", "name_en": "French Luxury", "image": "styles/french.jpg"},
+    {"name": "美式", "name_en": "American", "image": "styles/american.jpg"},
+    {"name": "工业风", "name_en": "Industrial", "image": "styles/industrial.jpg"},
+    {"name": "奶油风/混搭", "name_en": "Cream/Eclectic", "image": "styles/cream.jpg"},
 ]
 
-def main():
-    results = {}
+async def main():
+    conn = await asyncpg.connect(DATABASE_URL)
 
     for style in STYLES:
-        print(f"Processing {style['code']}...")
+        print(f"Processing {style['name']}...")
         embedding = embedding_service.get_embedding_from_file(style['image'])
-        results[style['code']] = embedding
 
-    # Output as JSON
-    print(json.dumps(results, indent=2))
+        await conn.execute("""
+            INSERT INTO home_styles (name, name_en, image_url, embedding)
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (id) DO UPDATE SET embedding = $4
+        """, style['name'], style['name_en'], f"/images/{style['image']}", embedding)
+
+    await conn.close()
+    print("Done!")
 
 if __name__ == "__main__":
-    main()
+    import asyncio
+    asyncio.run(main())
 ```
 
 ---
@@ -1713,12 +1752,13 @@ export async function uploadImage(
 
 ---
 
-*Document Version: v5.0*
-*Updated: 2025-12-30*
+*Document Version: v6.0*
+*Updated: 2026-01-02*
 *Key Changes:
-- Event-driven architecture with Pub/Sub
-- Continuous recommendation (no final results page)
-- Activity-based embedding updates
-- Static config for styles (no DB table)
-- Stripe payment integration with orders table
-- Complete checkout and webhook flow*
+- Added home_styles table with pre-computed embeddings
+- Added user_style_selections table (FK to home_styles)
+- Removed lastStyleCodes from user_preferences
+- user_preferences.embedding now only stores learned preferences from interactions
+- Feed uses MAX similarity across: selected styles + learned embedding
+- Detailed interaction signals with weights for embedding updates
+- Styles use numeric IDs instead of string codes*

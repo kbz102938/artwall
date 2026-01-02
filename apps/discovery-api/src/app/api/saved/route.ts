@@ -74,7 +74,7 @@ export async function POST(request: NextRequest) {
     // Ensure user preference exists
     await db.userPreference.upsert({
       where: { visitorId },
-      create: { visitorId, lastStyleCodes: [] },
+      create: { visitorId, interactionCount: 0 },
       update: {},
     });
 

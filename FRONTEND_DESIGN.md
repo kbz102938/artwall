@@ -2,10 +2,16 @@
 
 ## Overview
 
-ArtWall is a web-based art discovery platform that uses AI-powered recommendations to help users discover paintings that match their home and personal taste. The website creates personalized recommendations by combining:
-- **User's room photo** (20% weight) - Visual context of their living space
-- **Style preferences** (30% weight) - Selected home decor styles they like
-- **Art interactions** (50% weight) - Paintings they view, save, and engage with
+ArtWall is a web-based art discovery platform that uses AI-powered recommendations to help users discover paintings that match their home and personal taste. The website creates personalized recommendations using:
+
+- **Style preferences** - Selected home decor styles (1-3 choices from 8 options)
+- **Learned preferences** - Built from user interactions (save, view, purchase, etc.)
+
+**Recommendation approach:** MAX similarity
+- Paintings are ranked by their highest similarity to ANY of:
+  - User's selected style embeddings
+  - User's learned embedding (from interactions)
+- This ensures paintings matching ANY preferred style score high, rather than a blended average
 
 **Platform:** Web (Desktop & Mobile responsive)
 
@@ -331,16 +337,16 @@ Response: { "success": true }
 Let user select 1-3 home decor styles they like. These style images will be used to build their preference embedding.
 
 ### Available Styles
-| Code | Chinese | English | Keywords |
-|------|---------|---------|----------|
-| `modern` | 现代简约 | Modern Minimalist | 黑白灰, 线条感 |
-| `nordic` | 北欧 | Nordic | 白色, 木质, 绿植 |
-| `japanese` | 日式/侘寂 | Japanese Wabi-Sabi | 原木, 低饱和, 禅意 |
-| `chinese` | 新中式 | New Chinese | 木质, 对称, 东方元素 |
-| `french` | 法式/轻奢 | French Luxury | 石膏线, 金色点缀 |
-| `american` | 美式 | American | 深色木质, 复古 |
-| `industrial` | 工业风 | Industrial | 水泥, 金属, 管道 |
-| `cream` | 奶油风/混搭 | Cream/Eclectic | 柔和色调, 舒适 |
+| ID | Chinese | English |
+|----|---------|---------|
+| 1 | 现代简约 | Modern Minimalist |
+| 2 | 北欧 | Nordic |
+| 3 | 日式/侘寂 | Japanese Wabi-Sabi |
+| 4 | 新中式 | New Chinese |
+| 5 | 法式/轻奢 | French Luxury |
+| 6 | 美式 | American |
+| 7 | 工业风 | Industrial |
+| 8 | 奶油风/混搭 | Cream/Eclectic |
 
 ### UI Layout (Desktop)
 ```
@@ -390,11 +396,16 @@ Response:
 {
   "styles": [
     {
-      "code": "modern",
+      "id": 1,
       "name": "现代简约",
       "nameEn": "Modern Minimalist",
-      "imageUrl": "/images/styles/modern.jpg",
-      "keywords": ["黑白灰", "线条感", "少即是多"]
+      "imageUrl": "/images/styles/modern.jpg"
+    },
+    {
+      "id": 2,
+      "name": "北欧",
+      "nameEn": "Nordic",
+      "imageUrl": "/images/styles/nordic.jpg"
     },
     ...
   ]
@@ -406,14 +417,16 @@ Response:
 POST /api/onboarding/style
 Headers: x-visitor-id: v_xxx
 Body: {
-  "styleCodes": ["modern", "chinese"],
-  "styleImageUrls": [
-    "https://example.com/modern-room.jpg",
-    "https://example.com/chinese-room.jpg"
-  ]
+  "styleIds": [1, 4]
 }
 
-Response: { "success": true, "styles": [...] }
+Response: {
+  "success": true,
+  "styles": [
+    { "id": 1, "name": "现代简约", "nameEn": "Modern Minimalist" },
+    { "id": 4, "name": "新中式", "nameEn": "New Chinese" }
+  ]
+}
 ```
 
 ### Style Images
@@ -470,14 +483,27 @@ Show personalized painting recommendations in a vertical scroll feed with full-s
 - Keyboard: Arrow Up/Down to navigate
 
 ### Activity Tracking
-Track these events to improve recommendations:
+Track these events to improve recommendations. Events update the user's learned embedding.
+
+#### Explicit Signals (strongest)
 
 | Event | Trigger | Weight |
 |-------|---------|--------|
-| `view` | Painting visible >2s | 1.0 |
-| `zoom` | Double-tap to zoom | 2.0 |
-| `share` | Share button tapped | 3.0 |
-| `save` | Heart button tapped | 4.0 |
+| `purchase` | Completed purchase | +1.0 |
+| `save` | Heart button tapped | +0.7 |
+| `hide` | "Not interested" tapped | -0.5 |
+
+#### Implicit Signals
+
+| Event | Trigger | Weight |
+|-------|---------|--------|
+| `view` (>5s) | Painting visible >5s | +0.3 |
+| `view` (3-5s) | Painting visible 3-5s | +0.2 |
+| `view` (1-3s) | Painting visible 1-3s | +0.1 |
+| `click` | Tap to view details | +0.3 |
+| `zoom` | Double-tap to zoom | +0.2 |
+| `share` | Share button tapped | +0.4 |
+| `scroll_back` | Scrolled back to view | +0.3 |
 
 ### API Calls
 
@@ -701,26 +727,26 @@ interface Painting {
 }
 
 interface HomeStyle {
-  code: string;
+  id: number;
   name: string;
   nameEn: string;
   imageUrl: string;
-  keywords: string[];
 }
 
 interface OnboardingState {
   roomPhotoUrl?: string;
-  selectedStyles: string[];
+  selectedStyleIds: number[];
   isComplete: boolean;
 }
 
 interface ActivityEvent {
-  event: 'view' | 'zoom' | 'share' | 'save';
+  event: 'view' | 'click' | 'zoom' | 'share' | 'save' | 'hide' | 'scroll_back' | 'purchase';
   paintingId: string;
   timestamp: number;
   metadata?: {
-    duration?: number;
-    source?: string;
+    dwellTimeMs?: number;    // For view events
+    source?: string;         // 'feed', 'detail', 'saved'
+    position?: number;       // Position in feed
   };
 }
 ```
@@ -731,20 +757,35 @@ interface ActivityEvent {
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                    USER EMBEDDING                           │
+│               MAX SIMILARITY APPROACH                        │
 ├─────────────────────────────────────────────────────────────┤
 │                                                             │
-│   Room Photo ──→ CLIP ──→ Embedding (20%)                  │
-│        +                                                    │
-│   Style Images ──→ CLIP ──→ Embedding (30%)                │
-│        +                                                    │
-│   Art Interactions ──→ Weighted Avg ──→ Embedding (50%)    │
-│        ↓                                                    │
-│   Combined User Embedding (512-dim vector)                  │
-│        ↓                                                    │
-│   pgvector similarity search                                │
-│        ↓                                                    │
-│   Personalized Painting Recommendations                     │
+│   PHASE 1: STYLE SELECTION (Onboarding)                     │
+│   ┌─────────────────────────────────────────────────────┐   │
+│   │  User selects 1-3 styles                            │   │
+│   │  → Stored in user_style_selections table            │   │
+│   │  → Style embeddings pre-computed in home_styles     │   │
+│   └─────────────────────────────────────────────────────┘   │
+│                                                             │
+│   PHASE 2: FEED QUERY                                       │
+│   ┌─────────────────────────────────────────────────────┐   │
+│   │  For each painting, compute:                        │   │
+│   │                                                     │   │
+│   │  similarity = MAX(                                  │   │
+│   │    sim(painting, style_1),  ← selected styles       │   │
+│   │    sim(painting, style_2),                          │   │
+│   │    sim(painting, learned_embedding)  ← from interactions │
+│   │  )                                                  │   │
+│   │                                                     │   │
+│   │  ORDER BY similarity DESC                           │   │
+│   └─────────────────────────────────────────────────────┘   │
+│                                                             │
+│   PHASE 3: CONTINUOUS LEARNING                              │
+│   ┌─────────────────────────────────────────────────────┐   │
+│   │  User interactions (save, view, purchase)           │   │
+│   │  → Update learned_embedding in user_preferences     │   │
+│   │  → Feed gets more personalized over time            │   │
+│   └─────────────────────────────────────────────────────┘   │
 │                                                             │
 └─────────────────────────────────────────────────────────────┘
 ```

@@ -25,14 +25,47 @@ export async function GET(request: NextRequest) {
     let paintings: PaintingResult[];
 
     if (visitorId) {
-      // Check if user has an embedding
+      // Get user's selected style IDs
+      const userStyles = await db.$queryRaw<{ style_id: number }[]>`
+        SELECT style_id FROM user_style_selections WHERE visitor_id = ${visitorId}
+      `;
+
+      // Check if user has a learned embedding
       const userEmbedding = await db.$queryRaw<{ embedding: string }[]>`
         SELECT embedding::text FROM user_preferences WHERE visitor_id = ${visitorId}
       `;
 
-      if (userEmbedding.length > 0 && userEmbedding[0].embedding) {
-        // Vector similarity search - exclude already shown paintings
+      const hasStyles = userStyles.length > 0;
+      const hasLearnedEmbedding = userEmbedding.length > 0 && userEmbedding[0].embedding;
+
+      if (hasStyles || hasLearnedEmbedding) {
+        // Build MAX similarity query
+        // For each painting, compute max similarity across all style embeddings + learned embedding
+        const styleIds = userStyles.map((s) => s.style_id);
+
         paintings = await db.$queryRaw<PaintingResult[]>`
+          WITH style_similarities AS (
+            SELECT
+              p.id as painting_id,
+              MAX(1 - (p.embedding <=> hs.embedding)) as max_style_similarity
+            FROM paintings p
+            CROSS JOIN home_styles hs
+            WHERE hs.id = ANY(${styleIds}::int[])
+              AND p.embedding IS NOT NULL
+            GROUP BY p.id
+          ),
+          learned_similarity AS (
+            SELECT
+              p.id as painting_id,
+              CASE
+                WHEN up.embedding IS NOT NULL
+                THEN 1 - (p.embedding <=> up.embedding)
+                ELSE 0
+              END as learned_similarity
+            FROM paintings p
+            LEFT JOIN user_preferences up ON up.visitor_id = ${visitorId}
+            WHERE p.embedding IS NOT NULL
+          )
           SELECT
             p.id,
             p.title,
@@ -44,8 +77,13 @@ export async function GET(request: NextRequest) {
             p.image_url,
             p.tags,
             p.aspect_ratio,
-            1 - (p.embedding <=> (SELECT embedding FROM user_preferences WHERE visitor_id = ${visitorId})) as similarity
+            GREATEST(
+              COALESCE(ss.max_style_similarity, 0),
+              COALESCE(ls.learned_similarity, 0)
+            ) as similarity
           FROM paintings p
+          LEFT JOIN style_similarities ss ON ss.painting_id = p.id
+          LEFT JOIN learned_similarity ls ON ls.painting_id = p.id
           WHERE p.embedding IS NOT NULL
             AND p.id NOT IN (
               SELECT painting_id FROM shown_paintings WHERE visitor_id = ${visitorId}
@@ -54,7 +92,7 @@ export async function GET(request: NextRequest) {
           LIMIT ${limit} OFFSET ${offset}
         `;
       } else {
-        // No user embedding - return recent paintings, excluding shown
+        // No styles and no learned embedding - return recent paintings
         paintings = await db.$queryRaw<PaintingResult[]>`
           SELECT
             p.id,
@@ -106,7 +144,6 @@ export async function GET(request: NextRequest) {
         where: { visitorId },
         create: {
           visitorId,
-          lastStyleCodes: [],
           interactionCount: 0,
         },
         update: {},

@@ -48,22 +48,57 @@ model Painting {
 }
 
 // ============================================
-// USER PREFERENCES (Embedding State)
+// HOME STYLES (Pre-computed style embeddings)
+// ============================================
+model HomeStyle {
+  id        Int      @id @default(autoincrement())
+  name      String
+  nameEn    String?  @map("name_en")
+  imageUrl  String   @map("image_url")
+  embedding Unsupported("vector(512)")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  // Relations
+  userSelections UserStyleSelection[]
+
+  @@map("home_styles")
+}
+
+// ============================================
+// USER STYLE SELECTIONS (Links visitors to selected styles)
+// ============================================
+model UserStyleSelection {
+  visitorId  String   @map("visitor_id")
+  styleId    Int      @map("style_id")
+  selectedAt DateTime @default(now()) @map("selected_at")
+
+  user  UserPreference @relation(fields: [visitorId], references: [visitorId])
+  style HomeStyle      @relation(fields: [styleId], references: [id])
+
+  @@id([visitorId, styleId])
+  @@index([visitorId])
+  @@map("user_style_selections")
+}
+
+// ============================================
+// USER PREFERENCES (Learned Embedding from Interactions)
 // ============================================
 model UserPreference {
   visitorId        String   @id @map("visitor_id")
-  embedding        Unsupported("vector(512)")?
+  embedding        Unsupported("vector(512)")?  // Learned from interactions
   interactionCount Int      @default(0) @map("interaction_count")
-  lastStyleCodes   String[] @map("last_style_codes")
+  roomPhotoUrl     String?  @map("room_photo_url")
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
   // Relations
-  activities     Activity[]
-  shownPaintings ShownPainting[]
-  savedPaintings SavedPainting[]
-  orders         Order[]
+  styleSelections UserStyleSelection[]
+  activities      Activity[]
+  shownPaintings  ShownPainting[]
+  savedPaintings  SavedPainting[]
+  orders          Order[]
 
   @@map("user_preferences")
 }
