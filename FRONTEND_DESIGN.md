@@ -2,7 +2,51 @@
 
 ## Overview
 
-ArtWall is a mobile-first art discovery app that uses AI-powered recommendations to help users discover paintings they'll love. The app features a TikTok-style vertical swipe feed of paintings, personalized based on user interactions.
+ArtWall is a mobile-first art discovery app that uses AI-powered recommendations to help users discover paintings that match their home and personal taste. The app creates personalized recommendations by combining:
+- **User's room photo** (20% weight) - Visual context of their living space
+- **Style preferences** (30% weight) - Selected home decor styles they like
+- **Art interactions** (50% weight) - Paintings they view, save, and engage with
+
+---
+
+## Core User Flow
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                     ONBOARDING FLOW                         │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  Step 1: Upload Room Photo                                  │
+│  ┌─────────────────────────┐                               │
+│  │                         │                               │
+│  │   [Camera/Gallery]      │  "Take a photo of your        │
+│  │                         │   living room or bedroom"     │
+│  │   📷                    │                               │
+│  │                         │                               │
+│  └─────────────────────────┘                               │
+│              ↓                                              │
+│  Step 2: Select Home Styles (pick 1-3)                     │
+│  ┌─────┐ ┌─────┐ ┌─────┐ ┌─────┐                          │
+│  │现代  │ │北欧  │ │日式  │ │中式  │                          │
+│  │简约  │ │     │ │侘寂  │ │     │                          │
+│  └─────┘ └─────┘ └─────┘ └─────┘                          │
+│  ┌─────┐ ┌─────┐ ┌─────┐ ┌─────┐                          │
+│  │法式  │ │美式  │ │工业  │ │奶油  │                          │
+│  │轻奢  │ │     │ │风   │ │混搭  │                          │
+│  └─────┘ └─────┘ └─────┘ └─────┘                          │
+│              ↓                                              │
+│  Step 3: Show Personalized Feed                            │
+│  ┌─────────────────────────┐                               │
+│  │                         │                               │
+│  │   Painting Feed         │  Based on room + styles       │
+│  │   (Swipe vertically)    │                               │
+│  │                         │                               │
+│  └─────────────────────────┘                               │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+---
 
 ## Tech Stack Recommendation
 
@@ -10,15 +54,17 @@ ArtWall is a mobile-first art discovery app that uses AI-powered recommendations
 - **State Management**: Zustand or React Context
 - **HTTP Client**: Axios or fetch
 - **Image Handling**: React Native Fast Image / Next.js Image
-- **Gestures**: React Native Gesture Handler (mobile)
+- **Camera**: expo-camera or react-native-camera
+- **Image Upload**: Cloud storage (e.g., Cloudinary, S3) for room photos
 
 ---
 
 ## API Configuration
 
-### Base URL
+### Base URLs
 ```
-Production: https://artwall-api-919123660014.us-central1.run.app
+Discovery API: https://artwall-api-919123660014.us-central1.run.app
+CLIP Service:  https://clip-service-919123660014.us-central1.run.app
 ```
 
 ### Required Headers
@@ -28,39 +74,232 @@ x-visitor-id: <unique-visitor-id>
 Content-Type: application/json
 ```
 
-The `visitor-id` should be:
-- Generated on first app launch: `v_${uuid}`
-- Persisted in local storage/AsyncStorage
-- Sent with every API request
+Generate visitor ID on first launch: `v_${uuid}`, persist in local storage.
 
 ---
 
-## API Endpoints
+## Screen 1: Room Photo Upload
 
-### 1. GET /api/feed
-Fetch personalized painting feed.
+### Purpose
+Capture the visual context of user's living space to match paintings that will look good in their environment.
 
-**Request:**
+### UI Layout
+```
+┌─────────────────────────────┐
+│         ArtWall             │
+├─────────────────────────────┤
+│                             │
+│  让我们为您的家找到          │
+│  最合适的画作                │
+│                             │
+│  ┌───────────────────────┐  │
+│  │                       │  │
+│  │                       │  │
+│  │    📷                 │  │
+│  │    拍摄您的客厅或卧室    │  │
+│  │                       │  │
+│  │                       │  │
+│  └───────────────────────┘  │
+│                             │
+│  [  拍照  ]  [  从相册选择  ]  │
+│                             │
+│          [跳过]              │
+│                             │
+└─────────────────────────────┘
+```
+
+### Behavior
+1. User taps "拍照" → Open camera
+2. User taps "从相册选择" → Open photo gallery
+3. After photo selected → Upload to cloud storage → Get URL
+4. Call `/api/onboarding/photo` with image URL
+5. Navigate to Style Selection
+
+### API Call
+```
+POST /api/onboarding/photo
+Headers: x-visitor-id: v_xxx
+Body: { "imageUrl": "https://storage.example.com/room.jpg" }
+
+Response: { "success": true }
+```
+
+### Skip Option
+- User can skip this step
+- Will only use style preferences for initial recommendations
+
+---
+
+## Screen 2: Style Selection
+
+### Purpose
+Let user select 1-3 home decor styles they like. These style images will be used to build their preference embedding.
+
+### Available Styles
+| Code | Chinese | English | Keywords |
+|------|---------|---------|----------|
+| `modern` | 现代简约 | Modern Minimalist | 黑白灰, 线条感 |
+| `nordic` | 北欧 | Nordic | 白色, 木质, 绿植 |
+| `japanese` | 日式/侘寂 | Japanese Wabi-Sabi | 原木, 低饱和, 禅意 |
+| `chinese` | 新中式 | New Chinese | 木质, 对称, 东方元素 |
+| `french` | 法式/轻奢 | French Luxury | 石膏线, 金色点缀 |
+| `american` | 美式 | American | 深色木质, 复古 |
+| `industrial` | 工业风 | Industrial | 水泥, 金属, 管道 |
+| `cream` | 奶油风/混搭 | Cream/Eclectic | 柔和色调, 舒适 |
+
+### UI Layout
+```
+┌─────────────────────────────┐
+│  ←                          │
+├─────────────────────────────┤
+│                             │
+│  选择您喜欢的家居风格         │
+│  (可多选1-3个)               │
+│                             │
+│  ┌─────────┐ ┌─────────┐   │
+│  │ [image] │ │ [image] │   │
+│  │ 现代简约  │ │  北欧    │   │
+│  │   ✓     │ │         │   │
+│  └─────────┘ └─────────┘   │
+│                             │
+│  ┌─────────┐ ┌─────────┐   │
+│  │ [image] │ │ [image] │   │
+│  │ 日式侘寂  │ │  新中式   │   │
+│  │         │ │   ✓     │   │
+│  └─────────┘ └─────────┘   │
+│                             │
+│  ┌─────────┐ ┌─────────┐   │
+│  │ [image] │ │ [image] │   │
+│  │ 法式轻奢  │ │  美式    │   │
+│  └─────────┘ └─────────┘   │
+│                             │
+│  ┌─────────┐ ┌─────────┐   │
+│  │ [image] │ │ [image] │   │
+│  │  工业风  │ │ 奶油混搭  │   │
+│  └─────────┘ └─────────┘   │
+│                             │
+│  [    开始探索 (2/3)    ]    │
+│                             │
+└─────────────────────────────┘
+```
+
+### Behavior
+1. Display grid of style cards with representative images
+2. Tap to select/deselect (show checkmark)
+3. Allow 1-3 selections
+4. "开始探索" button shows count, disabled if 0 selected
+5. On submit → Call `/api/onboarding/style`
+6. Navigate to Feed
+
+### API Calls
+
+**Get available styles:**
+```
+GET /api/onboarding/style
+
+Response:
+{
+  "styles": [
+    {
+      "code": "modern",
+      "name": "现代简约",
+      "nameEn": "Modern Minimalist",
+      "imageUrl": "/images/styles/modern.jpg",
+      "keywords": ["黑白灰", "线条感", "少即是多"]
+    },
+    ...
+  ]
+}
+```
+
+**Submit selections:**
+```
+POST /api/onboarding/style
+Headers: x-visitor-id: v_xxx
+Body: {
+  "styleCodes": ["modern", "chinese"],
+  "styleImageUrls": [
+    "https://example.com/modern-room.jpg",
+    "https://example.com/chinese-room.jpg"
+  ]
+}
+
+Response: { "success": true, "styles": [...] }
+```
+
+### Style Images
+You need to provide representative images for each style. These should be:
+- High-quality interior design photos
+- Clearly representing the style
+- 1:1 or 4:3 aspect ratio
+- Hosted on CDN for fast loading
+
+---
+
+## Screen 3: Painting Feed (Home)
+
+### Purpose
+Show personalized painting recommendations in a TikTok-style vertical swipe feed.
+
+### UI Layout
+```
+┌─────────────────────────────┐
+│                             │
+│                             │
+│                             │
+│                             │
+│      [Painting Image]       │
+│      (Full Screen)          │
+│                             │
+│                             │
+│                             │
+│                             │
+├─────────────────────────────┤
+│ 《山居秋暝》                  │
+│ 王维 • 唐代                   │
+├─────────────────────────────┤
+│   ♡        ↗        ℹ️      │
+│  收藏      分享      详情     │
+└─────────────────────────────┘
+│  🏠       ❤️       👤       │
+│  首页     收藏      我的      │
+└─────────────────────────────┘
+```
+
+### Behavior
+- Swipe up → Next painting
+- Swipe down → Previous painting
+- Double-tap → Zoom image (track `zoom` event)
+- Tap ♡ → Save painting (track `save` event)
+- Tap ↗ → Share (track `share` event)
+- Tap ℹ️ → Open detail modal
+
+### Activity Tracking
+Track these events to improve recommendations:
+
+| Event | Trigger | Weight |
+|-------|---------|--------|
+| `view` | Painting visible >2s | 1.0 |
+| `zoom` | Double-tap to zoom | 2.0 |
+| `share` | Share button tapped | 3.0 |
+| `save` | Heart button tapped | 4.0 |
+
+### API Calls
+
+**Fetch feed:**
 ```
 GET /api/feed?offset=0&limit=10
-Headers:
-  x-visitor-id: v_abc123
-```
+Headers: x-visitor-id: v_xxx
 
-**Response:**
-```json
+Response:
 {
   "paintings": [
     {
       "id": "met_42260",
-      "title": "Recluse Fisherman, Autumn Trees",
-      "titleEn": null,
-      "artist": "Sheng Mao",
-      "artistEn": null,
-      "year": 1349,
-      "style": "Chinese Painting",
-      "imageUrl": "https://images.metmuseum.org/...",
-      "tags": ["landscape", "nature"],
+      "title": "山居秋暝",
+      "artist": "王维",
+      "year": 761,
+      "imageUrl": "https://...",
       "aspectRatio": "portrait",
       "similarity": 0.95
     }
@@ -70,56 +309,10 @@ Headers:
 }
 ```
 
-**Pagination:**
-- Use `offset` and `limit` for pagination
-- When `hasMore` is false, no more paintings available
-- Typical limit: 10-20 paintings per request
-
----
-
-### 2. GET /api/paintings/:id
-Fetch single painting details.
-
-**Request:**
+**Track activity:**
 ```
-GET /api/paintings/met_42260
-Headers:
-  x-visitor-id: v_abc123
-```
-
-**Response:**
-```json
-{
-  "painting": {
-    "id": "met_42260",
-    "title": "Recluse Fisherman, Autumn Trees",
-    "titleEn": null,
-    "artist": "Sheng Mao",
-    "artistEn": null,
-    "year": 1349,
-    "style": "Chinese Painting",
-    "imageUrl": "https://images.metmuseum.org/...",
-    "imageHdUrl": "https://images.metmuseum.org/.../original.jpg",
-    "source": "met",
-    "sourceUrl": "https://www.metmuseum.org/art/collection/search/42260",
-    "license": "CC0 1.0",
-    "tags": ["landscape", "nature"],
-    "aspectRatio": "portrait",
-    "isSaved": false
-  }
-}
-```
-
----
-
-### 3. POST /api/activity
-Track user interactions (for recommendation improvement).
-
-**Request:**
-```json
 POST /api/activity
-Headers:
-  x-visitor-id: v_abc123
+Headers: x-visitor-id: v_xxx
 Body:
 {
   "events": [
@@ -127,216 +320,110 @@ Body:
       "event": "view",
       "paintingId": "met_42260",
       "timestamp": 1704067200000,
-      "metadata": {
-        "duration": 5000,
-        "source": "feed"
-      }
+      "metadata": { "duration": 5000 }
     }
   ]
 }
 ```
 
-**Event Types:**
-| Event | Description | Weight |
-|-------|-------------|--------|
-| `view` | User viewed painting (>2s) | 1.0 |
-| `zoom` | User zoomed/expanded image | 2.0 |
-| `share` | User shared painting | 3.0 |
-| `save` | User saved to favorites | 4.0 |
-| `purchase` | User purchased print | 5.0 |
+---
 
-**Response:**
-```json
+## Screen 4: Painting Detail
+
+### UI Layout
+```
+┌─────────────────────────────┐
+│  ←                    ♡  ↗  │
+├─────────────────────────────┤
+│                             │
+│                             │
+│    [Painting Image]         │
+│    (Zoomable/Pannable)      │
+│                             │
+│                             │
+├─────────────────────────────┤
+│ 《山居秋暝》                  │
+│                             │
+│ 艺术家: 王维                  │
+│ 年代: 唐代 (761年)            │
+│ 风格: 山水画                  │
+├─────────────────────────────┤
+│ 来源: 大都会艺术博物馆         │
+│ 版权: CC0 公共领域             │
+│ [查看原作 ↗]                 │
+└─────────────────────────────┘
+```
+
+### API Call
+```
+GET /api/paintings/:id
+Headers: x-visitor-id: v_xxx
+
+Response:
 {
-  "received": true,
-  "count": 1
+  "painting": {
+    "id": "met_42260",
+    "title": "山居秋暝",
+    "artist": "王维",
+    "year": 761,
+    "style": "山水画",
+    "imageUrl": "https://...",
+    "imageHdUrl": "https://.../original.jpg",
+    "source": "met",
+    "sourceUrl": "https://www.metmuseum.org/...",
+    "license": "CC0 1.0",
+    "isSaved": false
+  }
 }
 ```
 
-**Best Practices:**
-- Batch events and send every 2-3 seconds
-- Send on app background/close
-- Include duration for view events
-
 ---
 
-### 4. GET /api/saved
-Fetch user's saved paintings.
+## Screen 5: Saved/Favorites
 
-**Request:**
+### UI Layout
+```
+┌─────────────────────────────┐
+│  我的收藏                    │
+├─────────────────────────────┤
+│ ┌───────┐ ┌───────┐        │
+│ │       │ │       │        │
+│ │ img   │ │ img   │        │
+│ │       │ │       │        │
+│ └───────┘ └───────┘        │
+│  标题      标题              │
+│                             │
+│ ┌───────┐ ┌───────┐        │
+│ │       │ │       │        │
+│ │ img   │ │ img   │        │
+│ │       │ │       │        │
+│ └───────┘ └───────┘        │
+│  标题      标题              │
+└─────────────────────────────┘
+```
+
+### API Calls
+
+**Get saved:**
 ```
 GET /api/saved
-Headers:
-  x-visitor-id: v_abc123
-```
+Headers: x-visitor-id: v_xxx
 
-**Response:**
-```json
+Response:
 {
   "paintings": [
-    {
-      "id": "met_42260",
-      "title": "Recluse Fisherman, Autumn Trees",
-      "artist": "Sheng Mao",
-      "imageUrl": "https://...",
-      "savedAt": "2024-01-01T12:00:00Z"
-    }
+    { "id": "...", "title": "...", "imageUrl": "...", "savedAt": "..." }
   ]
 }
 ```
 
----
-
-### 5. POST /api/saved
-Save or unsave a painting.
-
-**Request:**
-```json
+**Save/Unsave:**
+```
 POST /api/saved
-Headers:
-  x-visitor-id: v_abc123
-Body:
-{
-  "paintingId": "met_42260",
-  "action": "save"  // or "unsave"
-}
-```
+Headers: x-visitor-id: v_xxx
+Body: { "paintingId": "met_42260", "action": "save" }
 
-**Response:**
-```json
-{
-  "success": true,
-  "isSaved": true
-}
-```
-
----
-
-## Screens & Components
-
-### 1. Feed Screen (Home)
-
-**Layout:**
-- Full-screen vertical swipe feed (like TikTok/Instagram Reels)
-- One painting per screen
-- Swipe up = next painting
-- Swipe down = previous painting
-
-**Components:**
-```
-┌─────────────────────────┐
-│                         │
-│                         │
-│      [Painting Image]   │
-│      (Full Screen)      │
-│                         │
-│                         │
-├─────────────────────────┤
-│ Title                   │
-│ Artist • Year           │
-├─────────────────────────┤
-│ [♡ Save] [↗ Share] [ℹ]  │
-└─────────────────────────┘
-```
-
-**Behavior:**
-- Preload next 3-5 images for smooth scrolling
-- Track `view` event when painting visible for >2 seconds
-- Double-tap to zoom (track `zoom` event)
-- Tap heart to save (track `save` event)
-
-**State:**
-```typescript
-interface FeedState {
-  paintings: Painting[];
-  currentIndex: number;
-  isLoading: boolean;
-  hasMore: boolean;
-  offset: number;
-}
-```
-
----
-
-### 2. Painting Detail Screen
-
-**Trigger:** Tap info button or painting title
-
-**Layout:**
-```
-┌─────────────────────────┐
-│ [←]              [♡][↗] │
-├─────────────────────────┤
-│                         │
-│    [Painting Image]     │
-│    (Zoomable)           │
-│                         │
-├─────────────────────────┤
-│ Title                   │
-│ Artist                  │
-│ Year • Style            │
-├─────────────────────────┤
-│ Source: Metropolitan    │
-│ License: CC0            │
-│ [View Original ↗]       │
-├─────────────────────────┤
-│                         │
-│ [Order Print - ¥299]    │ (Future)
-│                         │
-└─────────────────────────┘
-```
-
-**Features:**
-- Pinch-to-zoom on image
-- HD image loading (use `imageHdUrl`)
-- Link to source museum
-- Share functionality
-
----
-
-### 3. Saved/Favorites Screen
-
-**Layout:**
-```
-┌─────────────────────────┐
-│ Saved Paintings         │
-├─────────────────────────┤
-│ ┌─────┐ ┌─────┐ ┌─────┐ │
-│ │     │ │     │ │     │ │
-│ │ img │ │ img │ │ img │ │
-│ │     │ │     │ │     │ │
-│ └─────┘ └─────┘ └─────┘ │
-│ Title   Title   Title   │
-│ ┌─────┐ ┌─────┐ ┌─────┐ │
-│ │     │ │     │ │     │ │
-│ ...                     │
-└─────────────────────────┘
-```
-
-**Behavior:**
-- Grid layout (2-3 columns)
-- Tap to open detail view
-- Long-press to unsave
-- Pull-to-refresh
-
----
-
-### 4. Profile/Settings Screen
-
-**Layout:**
-```
-┌─────────────────────────┐
-│ Settings                │
-├─────────────────────────┤
-│ Saved Paintings    [→]  │
-│ Order History      [→]  │ (Future)
-├─────────────────────────┤
-│ About ArtWall      [→]  │
-│ Privacy Policy     [→]  │
-│ Terms of Service   [→]  │
-├─────────────────────────┤
-│ Version 1.0.0           │
-└─────────────────────────┘
+Response: { "success": true, "isSaved": true }
 ```
 
 ---
@@ -344,13 +431,27 @@ interface FeedState {
 ## Navigation Structure
 
 ```
-TabNavigator
-├── Feed (Home)
-│   └── PaintingDetail (Modal/Stack)
-├── Saved
-│   └── PaintingDetail (Modal/Stack)
-└── Profile
-    └── Settings
+App
+├── Onboarding (first launch only)
+│   ├── RoomPhotoScreen
+│   └── StyleSelectionScreen
+│
+└── MainTabs
+    ├── FeedTab (Home)
+    │   └── PaintingDetail (Modal)
+    ├── SavedTab
+    │   └── PaintingDetail (Modal)
+    └── ProfileTab
+```
+
+### First Launch Detection
+```typescript
+const hasCompletedOnboarding = await AsyncStorage.getItem('onboarding_complete');
+if (!hasCompletedOnboarding) {
+  // Show onboarding flow
+} else {
+  // Go to main tabs
+}
 ```
 
 ---
@@ -377,162 +478,138 @@ interface Painting {
   isSaved?: boolean;
 }
 
+interface HomeStyle {
+  code: string;
+  name: string;
+  nameEn: string;
+  imageUrl: string;
+  keywords: string[];
+}
+
+interface OnboardingState {
+  roomPhotoUrl?: string;
+  selectedStyles: string[];
+  isComplete: boolean;
+}
+
 interface ActivityEvent {
-  event: 'view' | 'zoom' | 'share' | 'save' | 'purchase';
+  event: 'view' | 'zoom' | 'share' | 'save';
   paintingId: string;
   timestamp: number;
   metadata?: {
     duration?: number;
     source?: string;
-    position?: number;
   };
 }
-
-interface FeedResponse {
-  paintings: Painting[];
-  nextOffset: number | null;
-  hasMore: boolean;
-}
 ```
 
 ---
 
-## Activity Tracking Implementation
+## Recommendation Algorithm Flow
 
-```typescript
-class ActivityTracker {
-  private queue: ActivityEvent[] = [];
-  private visitorId: string;
-  private flushInterval = 2000; // 2 seconds
-
-  constructor(visitorId: string) {
-    this.visitorId = visitorId;
-    setInterval(() => this.flush(), this.flushInterval);
-  }
-
-  track(event: Omit<ActivityEvent, 'timestamp'>) {
-    this.queue.push({
-      ...event,
-      timestamp: Date.now(),
-    });
-  }
-
-  async flush() {
-    if (this.queue.length === 0) return;
-
-    const events = [...this.queue];
-    this.queue = [];
-
-    await fetch('/api/activity', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-visitor-id': this.visitorId,
-      },
-      body: JSON.stringify({ events }),
-    });
-  }
-}
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    USER EMBEDDING                           │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│   Room Photo ──→ CLIP ──→ Embedding (20%)                  │
+│        +                                                    │
+│   Style Images ──→ CLIP ──→ Embedding (30%)                │
+│        +                                                    │
+│   Art Interactions ──→ Weighted Avg ──→ Embedding (50%)    │
+│        ↓                                                    │
+│   Combined User Embedding (512-dim vector)                  │
+│        ↓                                                    │
+│   pgvector similarity search                                │
+│        ↓                                                    │
+│   Personalized Painting Recommendations                     │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## Image Handling
+## Image Assets Required
 
-### Aspect Ratios
-Paintings come in different aspect ratios:
-- `portrait`: Height > Width (most common)
-- `landscape`: Width > Height
-- `square`: Equal dimensions
+### Style Images (8 images)
+Host these on CDN and update `imageUrl` in styles:
+- `/images/styles/modern.jpg` - Modern minimalist interior
+- `/images/styles/nordic.jpg` - Nordic/Scandinavian interior
+- `/images/styles/japanese.jpg` - Japanese wabi-sabi interior
+- `/images/styles/chinese.jpg` - New Chinese style interior
+- `/images/styles/french.jpg` - French luxury interior
+- `/images/styles/american.jpg` - American style interior
+- `/images/styles/industrial.jpg` - Industrial loft interior
+- `/images/styles/cream.jpg` - Cream/eclectic interior
 
-### Image Loading Strategy
-1. Show low-res placeholder or blur hash
-2. Load full `imageUrl` for feed
-3. Load `imageHdUrl` only in detail view when zooming
+### Onboarding Assets
+- Camera icon/illustration
+- Checkmark icon for selection
+- Welcome/intro illustrations
 
-### Recommended Image Component Props
-```typescript
-{
-  source: { uri: painting.imageUrl },
-  resizeMode: 'contain',
-  style: { width: '100%', height: '100%' },
-  // For React Native Fast Image:
-  priority: index < 3 ? 'high' : 'normal',
-}
+---
+
+## Error States
+
+### No Network
+```
+┌─────────────────────────────┐
+│                             │
+│         📡                  │
+│                             │
+│     无法连接网络              │
+│     请检查您的网络设置         │
+│                             │
+│      [ 重试 ]               │
+│                             │
+└─────────────────────────────┘
+```
+
+### Empty Saved
+```
+┌─────────────────────────────┐
+│                             │
+│         ♡                   │
+│                             │
+│     还没有收藏的画作          │
+│     去首页探索吧              │
+│                             │
+│      [ 去探索 ]              │
+│                             │
+└─────────────────────────────┘
 ```
 
 ---
 
-## Offline Support (Optional)
+## Performance Considerations
 
-For better UX, consider:
-1. Cache last 20 viewed paintings
-2. Cache all saved paintings
-3. Queue activity events when offline
-4. Sync when back online
-
----
-
-## Color Palette Suggestion
-
-```css
---background: #FAFAFA;
---surface: #FFFFFF;
---primary: #1A1A1A;
---secondary: #666666;
---accent: #E53935;  /* For save/like button */
---border: #EEEEEE;
-```
-
----
-
-## Performance Tips
-
-1. **Virtualized List**: Use FlatList (RN) or virtualized list for feed
-2. **Image Preloading**: Preload next 3-5 images
-3. **Skeleton Loading**: Show skeleton while images load
-4. **Debounce**: Debounce save/unsave actions
-5. **Batch Events**: Don't send activity events one by one
-
----
-
-## Error Handling
-
-```typescript
-// API Error Response Format
-{
-  "error": "Error message here"
-}
-
-// Handle common cases:
-// - 400: Bad request (missing visitor-id)
-// - 404: Painting not found
-// - 500: Server error (show retry option)
-// - Network error: Show offline state
-```
+1. **Image Preloading**: Preload next 3-5 paintings in feed
+2. **Skeleton Loading**: Show placeholders while images load
+3. **Batch Activity Events**: Send every 2-3 seconds, not per event
+4. **Cache Styles**: Cache style images after first load
+5. **Offline Queue**: Queue activity events when offline
 
 ---
 
 ## Testing Checklist
 
-- [ ] Feed loads on app open
-- [ ] Swipe navigation works smoothly
+### Onboarding
+- [ ] Camera capture works
+- [ ] Gallery picker works
+- [ ] Skip photo option works
+- [ ] Style selection allows 1-3 choices
+- [ ] Style images load correctly
+- [ ] Onboarding state persists
+
+### Feed
+- [ ] Feed loads after onboarding
+- [ ] Swipe navigation smooth
 - [ ] Images load progressively
-- [ ] Save/unsave updates UI immediately
-- [ ] Activity tracking sends events
-- [ ] Saved paintings persist across sessions
-- [ ] Offline mode shows cached content
-- [ ] Deep links to paintings work
+- [ ] Activity tracking works
+- [ ] Save/unsave updates immediately
+
+### General
+- [ ] Visitor ID persists across sessions
+- [ ] Offline handling works
+- [ ] Deep links work
 - [ ] Share functionality works
-- [ ] Zoom gesture on detail view works
-
----
-
-## Future Features (Not in MVP)
-
-1. **Onboarding**: Style preference selection
-2. **Search**: Text search for paintings
-3. **Filters**: Filter by artist, year, style
-4. **Print Orders**: E-commerce checkout flow
-5. **Social**: Share collections, follow users
-6. **AR View**: Preview painting on wall
