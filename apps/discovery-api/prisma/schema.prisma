@@ -13,7 +13,7 @@ datasource db {
 // PAINTINGS (Core Data)
 // ============================================
 model Painting {
-  id          String   @id
+  id          String   @id @default(dbgenerated("gen_random_uuid()"))
   title       String
   titleEn     String?  @map("title_en")
   artist      String
