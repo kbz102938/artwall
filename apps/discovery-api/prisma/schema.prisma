@@ -85,10 +85,11 @@ model UserStyleSelection {
 // USER PREFERENCES (Learned Embedding from Interactions)
 // ============================================
 model UserPreference {
-  visitorId        String   @id @map("visitor_id")
-  embedding        Unsupported("vector(512)")?  // Learned from interactions
-  interactionCount Int      @default(0) @map("interaction_count")
-  roomPhotoUrl     String?  @map("room_photo_url")
+  visitorId           String   @id @map("visitor_id")
+  embedding           Unsupported("vector(512)")?  // Learned from interactions
+  interactionCount    Int      @default(0) @map("interaction_count")
+  roomPhotoUrl        String?  @map("room_photo_url")
+  placementSuggestion Json?    @map("placement_suggestion")  // AI-suggested: { x, y, width, height }
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
